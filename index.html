@@ -26,6 +26,13 @@
                 </button>
             </div>
             <p class="text-sm text-gray-500">Your API key is stored locally and never sent to any server except OpenAI.</p>
+            <!-- Status indicator -->
+            <div id="apiStatus" class="mt-2 text-sm hidden">
+                <span class="inline-flex items-center">
+                    <span id="statusDot" class="h-2 w-2 rounded-full mr-2"></span>
+                    <span id="statusText"></span>
+                </span>
+            </div>
         </div>
 
         <!-- Chat Interface -->
@@ -48,7 +55,7 @@
                     <textarea id="userInput" rows="2" 
                               class="flex-1 p-2 border rounded-lg mr-2 resize-none"
                               placeholder="Type your message here..."></textarea>
-                    <button onclick="sendMessage()" 
+                    <button id="sendButton" onclick="sendMessage()" 
                             class="bg-blue-500 text-white px-6 py-2 rounded-lg hover:bg-blue-600 h-full flex items-center">
                         <i class="fas fa-paper-plane mr-2"></i>
                         Send
@@ -65,7 +72,7 @@
                     <label class="block text-sm font-medium text-gray-700 mb-1">Model</label>
                     <select id="model" class="w-full p-2 border rounded">
                         <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
-                        <option value="gpt-4">GPT-4</option>
+                        <option value="gpt-4">GPT-4 (if available)</option>
                     </select>
                 </div>
                 <div>
@@ -75,36 +82,80 @@
                     <span id="tempValue" class="text-sm text-gray-600">0.7</span>
                 </div>
             </div>
+            <!-- Debug Console -->
+            <div class="mt-4">
+                <label class="flex items-center">
+                    <input type="checkbox" id="debugMode" class="mr-2">
+                    <span class="text-sm text-gray-700">Enable Debug Mode</span>
+                </label>
+                <div id="debugConsole" class="hidden mt-2 p-2 bg-gray-100 rounded text-sm font-mono h-32 overflow-y-auto">
+                </div>
+            </div>
         </div>
     </div>
 
     <script>
-        // Store API key locally
-        function saveApiKey() {
-            const apiKey = document.getElementById('apiKey').value;
-            localStorage.setItem('openai_api_key', apiKey);
-            alert('API key saved successfully!');
+        let messageHistory = [];
+
+        function debugLog(message, type = 'info') {
+            if (document.getElementById('debugMode').checked) {
+                const console = document.getElementById('debugConsole');
+                console.classList.remove('hidden');
+                const timestamp = new Date().toLocaleTimeString();
+                console.innerHTML += `<div class="text-${type === 'error' ? 'red' : 'gray'}-600">[${timestamp}] ${message}</div>`;
+                console.scrollTop = console.scrollHeight;
+            }
         }
 
-        // Update temperature value display
+        function updateApiStatus(status, message) {
+            const statusDiv = document.getElementById('apiStatus');
+            const statusDot = document.getElementById('statusDot');
+            const statusText = document.getElementById('statusText');
+            
+            statusDiv.classList.remove('hidden');
+            statusDot.className = `h-2 w-2 rounded-full mr-2 ${
+                status === 'success' ? 'bg-green-500' :
+                status === 'error' ? 'bg-red-500' :
+                'bg-yellow-500'
+            }`;
+            statusText.textContent = message;
+        }
+
+        function saveApiKey() {
+            const apiKey = document.getElementById('apiKey').value.trim();
+            if (!apiKey) {
+                updateApiStatus('error', 'API key cannot be empty');
+                return;
+            }
+            
+            // Basic validation of API key format
+            if (!apiKey.startsWith('sk-') || apiKey.length < 30) {
+                updateApiStatus('error', 'Invalid API key format');
+                return;
+            }
+
+            localStorage.setItem('openai_api_key', apiKey);
+            updateApiStatus('success', 'API key saved successfully');
+            debugLog('API key saved');
+        }
+
         function updateTempValue(value) {
             document.getElementById('tempValue').textContent = value;
         }
 
-        // Add a message to the chat history
-        function addMessage(content, isUser = false) {
+        function addMessage(content, isUser = false, isError = false) {
             const chatHistory = document.getElementById('chatHistory');
             const messageDiv = document.createElement('div');
             messageDiv.className = 'flex items-start mb-4';
             
             const avatar = document.createElement('div');
             avatar.className = 'flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center text-white';
-            avatar.style.backgroundColor = isUser ? '#4A5568' : '#3B82F6';
+            avatar.style.backgroundColor = isUser ? '#4A5568' : (isError ? '#EF4444' : '#3B82F6');
             avatar.textContent = isUser ? 'U' : 'A';
 
             const messageContent = document.createElement('div');
-            messageContent.className = 'ml-3 bg-gray-100 rounded-lg p-3 max-w-3xl';
-            messageContent.innerHTML = `<p class="text-gray-800">${content}</p>`;
+            messageContent.className = `ml-3 ${isError ? 'bg-red-50' : 'bg-gray-100'} rounded-lg p-3 max-w-3xl`;
+            messageContent.innerHTML = `<p class="${isError ? 'text-red-600' : 'text-gray-800'}">${content}</p>`;
 
             messageDiv.appendChild(avatar);
             messageDiv.appendChild(messageContent);
@@ -112,18 +163,24 @@
             chatHistory.scrollTop = chatHistory.scrollHeight;
         }
 
-        // Send message to OpenAI API
         async function sendMessage() {
             const userInput = document.getElementById('userInput');
+            const sendButton = document.getElementById('sendButton');
             const message = userInput.value.trim();
             if (!message) return;
 
             const apiKey = localStorage.getItem('openai_api_key');
             if (!apiKey) {
-                alert('Please set your OpenAI API key first!');
+                addMessage('Please set your OpenAI API key first!', false, true);
+                updateApiStatus('error', 'API key not set');
                 return;
             }
 
+            // Disable send button and input while processing
+            sendButton.disabled = true;
+            userInput.disabled = true;
+            sendButton.classList.add('opacity-50');
+            
             // Add user message to chat
             addMessage(message, true);
             userInput.value = '';
@@ -132,7 +189,12 @@
             const model = document.getElementById('model').value;
             const temperature = parseFloat(document.getElementById('temperature').value);
 
+            // Add message to history
+            messageHistory.push({ role: 'user', content: message });
+
             try {
+                debugLog(`Sending request to OpenAI API (model: ${model}, temp: ${temperature})`);
+                
                 const response = await fetch('https://api.openai.com/v1/chat/completions', {
                     method: 'POST',
                     headers: {
@@ -141,22 +203,47 @@
                     },
                     body: JSON.stringify({
                         model: model,
-                        messages: [{
-                            role: 'user',
-                            content: message
-                        }],
+                        messages: messageHistory,
                         temperature: temperature
                     })
                 });
 
                 const data = await response.json();
+                debugLog(`API Response: ${JSON.stringify(data)}`);
+
+                if (!response.ok) {
+                    throw new Error(data.error?.message || 'Unknown API error');
+                }
+
                 if (data.choices && data.choices[0]) {
-                    addMessage(data.choices[0].message.content);
+                    const assistantMessage = data.choices[0].message.content;
+                    messageHistory.push({ role: 'assistant', content: assistantMessage });
+                    addMessage(assistantMessage);
+                    updateApiStatus('success', 'Message sent successfully');
                 } else {
-                    addMessage('Sorry, I encountered an error processing your request.');
+                    throw new Error('Invalid response format from API');
                 }
             } catch (error) {
-                addMessage(`Error: ${error.message}`);
+                debugLog(`Error: ${error.message}`, 'error');
+                let errorMessage = 'An error occurred while processing your request. ';
+                
+                if (error.message.includes('API key')) {
+                    errorMessage += 'Please check your API key.';
+                } else if (error.message.includes('Rate limit')) {
+                    errorMessage += 'Rate limit exceeded. Please wait a moment before trying again.';
+                } else if (error.message.includes('model')) {
+                    errorMessage += 'The selected model is currently unavailable.';
+                } else {
+                    errorMessage += 'Please try again later.';
+                }
+                
+                addMessage(errorMessage, false, true);
+                updateApiStatus('error', 'Error: ' + error.message);
+            } finally {
+                // Re-enable send button and input
+                sendButton.disabled = false;
+                userInput.disabled = false;
+                sendButton.classList.remove('opacity-50');
             }
         }
 
@@ -167,6 +254,20 @@
                 sendMessage();
             }
         });
+
+        // Initialize debug console visibility
+        document.getElementById('debugMode').addEventListener('change', function(e) {
+            document.getElementById('debugConsole').classList.toggle('hidden', !e.target.checked);
+        });
+
+        // Check for saved API key on load
+        window.onload = function() {
+            const apiKey = localStorage.getItem('openai_api_key');
+            if (apiKey) {
+                document.getElementById('apiKey').value = apiKey;
+                updateApiStatus('success', 'API key loaded from storage');
+            }
+        };
     </script>
 </body>
 </html>
